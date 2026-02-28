@@ -13,3 +13,5 @@
 /Visio/VisioCall.Shared/bin/Debug/net9.0
 net10.0
 obj
+win-x64
+net10.0-android

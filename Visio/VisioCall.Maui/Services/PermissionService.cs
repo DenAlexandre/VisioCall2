@@ -4,6 +4,10 @@ public class PermissionService
 {
     public async Task<bool> RequestCameraAndMicrophoneAsync()
     {
+#if WINDOWS
+        // Windows WebView2 handles its own media permissions
+        return true;
+#else
         var cameraStatus = await Permissions.CheckStatusAsync<Permissions.Camera>();
         var micStatus = await Permissions.CheckStatusAsync<Permissions.Microphone>();
 
@@ -14,5 +18,6 @@ public class PermissionService
             micStatus = await Permissions.RequestAsync<Permissions.Microphone>();
 
         return cameraStatus == PermissionStatus.Granted && micStatus == PermissionStatus.Granted;
+#endif
     }
 }

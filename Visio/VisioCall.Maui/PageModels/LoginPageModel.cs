@@ -9,7 +9,7 @@ public partial class LoginPageModel : ObservableObject
     private readonly PermissionService _permissions;
 
     [ObservableProperty]
-    private string _serverUrl = "https://eradicable-nonincandescent-sachiko.ngrok-free.dev";
+    private string _serverUrl = "http://192.168.1.36:5000";
 
     [ObservableProperty]
     private string _userId = "";

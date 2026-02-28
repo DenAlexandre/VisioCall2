@@ -25,6 +25,12 @@ public static class MauiProgram
         Platforms.Android.Handlers.WebViewPermissionHandler.Configure();
 #elif IOS
         Platforms.iOS.Handlers.WebViewMediaHandler.Configure();
+#elif WINDOWS
+        // Disable mDNS obfuscation so WebRTC ICE candidates use real IP addresses
+        // (required for LAN connectivity with mobile devices)
+        Environment.SetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+            "--disable-features=WebRtcHideLocalIpsWithMdns");
+        Platforms.Windows.Handlers.WebViewPermissionHandler.Configure();
 #endif
 
         // Services

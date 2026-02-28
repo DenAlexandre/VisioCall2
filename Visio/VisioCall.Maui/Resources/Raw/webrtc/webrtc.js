@@ -13,44 +13,68 @@ const config = {
     ]
 };
 
-// --- Message queue to avoid losing messages with location.href ---
-const messageQueue = [];
-let sending = false;
+// --- JS → C# bridge ---
+// Windows (WebView2): messages queued, C# polls via flushMessages()
+// Android/iOS: messages sent via iframe URL interception
+const _outbox = [];
+const _isWebView2 = !!(window.chrome && window.chrome.webview);
 
 function sendToNative(action, data) {
-    const encoded = encodeURIComponent(JSON.stringify(data));
-    const url = 'visiocall://' + action + '/' + encoded;
-    messageQueue.push(url);
-    processQueue();
+    if (_isWebView2) {
+        _outbox.push({ action: action, data: data });
+    } else {
+        const encoded = encodeURIComponent(JSON.stringify(data));
+        const url = 'visiocall://' + action + '/' + encoded;
+        const iframe = document.createElement('iframe');
+        iframe.style.display = 'none';
+        iframe.src = url;
+        document.body.appendChild(iframe);
+        setTimeout(() => iframe.remove(), 100);
+    }
 }
 
-function processQueue() {
-    if (sending || messageQueue.length === 0) return;
-    sending = true;
-    const url = messageQueue.shift();
-    const iframe = document.createElement('iframe');
-    iframe.style.display = 'none';
-    iframe.src = url;
-    document.body.appendChild(iframe);
-    setTimeout(() => {
-        iframe.remove();
-        sending = false;
-        processQueue();
-    }, 100);
+// Called by C# polling to collect pending messages.
+// Returns the raw array — EvaluateJavaScriptAsync handles JSON serialization.
+function flushMessages() {
+    if (_outbox.length === 0) return null;
+    return _outbox.splice(0);
+}
+
+function log(msg) {
+    statusEl.textContent = msg;
+}
+
+// --- Wait for ICE gathering to complete ---
+function waitForIceGathering() {
+    return new Promise(resolve => {
+        if (pc.iceGatheringState === 'complete') {
+            resolve();
+            return;
+        }
+        const check = () => {
+            if (pc.iceGatheringState === 'complete') {
+                pc.removeEventListener('icegatheringstatechange', check);
+                resolve();
+            }
+        };
+        pc.addEventListener('icegatheringstatechange', check);
+        setTimeout(resolve, 5000);
+    });
 }
 
 // --- Media ---
 async function initMedia() {
     try {
+        log('Requesting camera...');
         localStream = await navigator.mediaDevices.getUserMedia({
             video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
             audio: true
         });
         localVideo.srcObject = localStream;
-        statusEl.textContent = 'Camera ready';
+        log('Camera ready');
         return true;
     } catch (err) {
-        statusEl.textContent = 'Camera error: ' + err.message;
+        log('Camera error: ' + err.message);
         sendToNative('error', 'getUserMedia failed: ' + err.message);
         return false;
     }
@@ -65,11 +89,9 @@ function createPeerConnection() {
     }
 
     pc.ontrack = (event) => {
-        statusEl.textContent = '';
         if (event.streams && event.streams[0]) {
             remoteVideo.srcObject = event.streams[0];
         } else {
-            // Fallback: create a new MediaStream from the track
             let stream = remoteVideo.srcObject;
             if (!stream) {
                 stream = new MediaStream();
@@ -77,15 +99,12 @@ function createPeerConnection() {
             }
             stream.addTrack(event.track);
         }
+        setTimeout(() => { statusEl.textContent = ''; }, 500);
     };
 
     pc.onicecandidate = (event) => {
         if (event.candidate) {
-            sendToNative('ice-candidate', {
-                candidate: event.candidate.candidate,
-                sdpMid: event.candidate.sdpMid,
-                sdpMLineIndex: event.candidate.sdpMLineIndex
-            });
+            log('Gathering ICE...');
         }
     };
 
@@ -93,60 +112,84 @@ function createPeerConnection() {
         const state = pc.iceConnectionState;
         if (state === 'connected' || state === 'completed') {
             statusEl.textContent = '';
-        } else if (state === 'disconnected' || state === 'failed') {
-            statusEl.textContent = 'Connection lost';
+        } else if (state === 'failed') {
+            log('Connection failed');
+        }
+    };
+
+    pc.onconnectionstatechange = () => {
+        const state = pc.connectionState;
+        if (state === 'connecting') {
+            log('Connecting...');
+        } else if (state === 'connected') {
+            statusEl.textContent = '';
         }
     };
 }
 
-// --- Caller: create offer ---
+// --- Caller: create offer (vanilla ICE) ---
 async function createOffer() {
     const ready = await initMedia();
     if (!ready) return;
 
     createPeerConnection();
-    statusEl.textContent = 'Creating offer...';
+    log('Creating offer...');
 
     try {
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
-        sendToNative('offer', { type: offer.type, sdp: offer.sdp });
+        log('Gathering ICE candidates...');
+        await waitForIceGathering();
+
+        const complete = pc.localDescription;
+        log('Sending offer...');
+        sendToNative('offer', { type: complete.type, sdp: complete.sdp });
     } catch (err) {
+        log('Offer error: ' + err.message);
         sendToNative('error', 'createOffer failed: ' + err.message);
     }
 }
 
-// --- Callee: receive offer then auto-answer ---
+// --- Callee: receive offer then auto-answer (vanilla ICE) ---
 async function receiveOffer(offer) {
+    log('Received offer');
     const ready = await initMedia();
     if (!ready) return;
 
     createPeerConnection();
-    statusEl.textContent = 'Connecting...';
 
     try {
         await pc.setRemoteDescription(new RTCSessionDescription({
             type: offer.type,
             sdp: offer.sdp
         }));
+        log('Creating answer...');
 
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
-        sendToNative('answer', { type: answer.type, sdp: answer.sdp });
+        log('Gathering ICE candidates...');
+        await waitForIceGathering();
+
+        const complete = pc.localDescription;
+        log('Sending answer...');
+        sendToNative('answer', { type: complete.type, sdp: complete.sdp });
     } catch (err) {
+        log('Answer error: ' + err.message);
         sendToNative('error', 'receiveOffer failed: ' + err.message);
     }
 }
 
 // --- Caller: receive answer ---
 async function receiveAnswer(answer) {
-    if (!pc) return;
+    if (!pc) { log('receiveAnswer: no pc!'); return; }
     try {
         await pc.setRemoteDescription(new RTCSessionDescription({
             type: answer.type,
             sdp: answer.sdp
         }));
+        log('Connecting...');
     } catch (err) {
+        log('receiveAnswer error: ' + err.message);
         sendToNative('error', 'receiveAnswer failed: ' + err.message);
     }
 }
@@ -161,31 +204,24 @@ async function receiveIceCandidate(candidate) {
             sdpMLineIndex: candidate.sdpMLineIndex
         }));
     } catch (err) {
-        sendToNative('error', 'addIceCandidate failed: ' + err.message);
+        // Ignore — vanilla ICE candidates are already in the SDP
     }
 }
 
 function toggleMute() {
     if (!localStream) return;
     const audioTrack = localStream.getAudioTracks()[0];
-    if (audioTrack) {
-        audioTrack.enabled = !audioTrack.enabled;
-    }
+    if (audioTrack) audioTrack.enabled = !audioTrack.enabled;
 }
 
 function toggleCamera() {
     if (!localStream) return;
     const videoTrack = localStream.getVideoTracks()[0];
-    if (videoTrack) {
-        videoTrack.enabled = !videoTrack.enabled;
-    }
+    if (videoTrack) videoTrack.enabled = !videoTrack.enabled;
 }
 
 function closeConnection() {
-    if (pc) {
-        pc.close();
-        pc = null;
-    }
+    if (pc) { pc.close(); pc = null; }
     if (localStream) {
         localStream.getTracks().forEach(track => track.stop());
         localStream = null;

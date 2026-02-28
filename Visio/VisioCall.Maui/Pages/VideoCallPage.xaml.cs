@@ -16,17 +16,27 @@ public partial class VideoCallPage : ContentPage
     {
         base.OnAppearing();
 
-        // Load WebRTC HTML into the WebView
-        WebRtcView.Source = new HtmlWebViewSource
-        {
-            Html = await LoadWebRtcHtmlAsync()
-        };
-
         // Wait for WebView to load, then initialize the call
         WebRtcView.Navigated += async (_, _) =>
         {
             await _pageModel.InitializeCallAsync(WebRtcView);
         };
+
+        var html = await LoadWebRtcHtmlAsync();
+
+#if WINDOWS
+        // Write HTML to app data and load via virtual host for secure context (getUserMedia requires HTTPS)
+        var webrtcDir = Path.Combine(FileSystem.AppDataDirectory, "webrtc");
+        Directory.CreateDirectory(webrtcDir);
+        var htmlPath = Path.Combine(webrtcDir, "index.html");
+        await File.WriteAllTextAsync(htmlPath, html);
+        WebRtcView.Source = new UrlWebViewSource
+        {
+            Url = $"https://{Platforms.Windows.Handlers.WebViewPermissionHandler.VirtualHost}/index.html"
+        };
+#else
+        WebRtcView.Source = new HtmlWebViewSource { Html = html };
+#endif
     }
 
     private static async Task<string> LoadWebRtcHtmlAsync()

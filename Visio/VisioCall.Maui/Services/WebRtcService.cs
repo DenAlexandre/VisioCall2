@@ -6,7 +6,7 @@ namespace VisioCall.Maui.Services;
 /// <summary>
 /// Bridge between C# and WebRTC JavaScript running in a WebView.
 /// C# -> JS: EvaluateJavaScriptAsync
-/// JS -> C#: URL interception (visiocall://...)
+/// JS -> C#: URL interception on Android/iOS, polling on Windows
 /// </summary>
 public class WebRtcService
 {
@@ -19,6 +19,7 @@ public class WebRtcService
     private WebView? _webView;
     private readonly SignalingService _signaling;
     private string? _remoteUserId;
+    private CancellationTokenSource? _pollCts;
 
     private Action<SessionDescription>? _onReceiveOffer;
     private Action<SessionDescription>? _onReceiveAnswer;
@@ -37,6 +38,10 @@ public class WebRtcService
         _remoteUserId = remoteUserId;
         _webView.Navigating += OnWebViewNavigating;
 
+#if WINDOWS
+        StartPolling();
+#endif
+
         // Wire SignalR events to JS
         _onReceiveOffer = async offer =>
             await EvalJsAsync($"receiveOffer({JsonSerializer.Serialize(offer, JsonOptions)})");
@@ -52,6 +57,9 @@ public class WebRtcService
 
     public void DetachWebView()
     {
+#if WINDOWS
+        StopPolling();
+#endif
         if (_onReceiveOffer is not null) _signaling.OnReceiveOffer -= _onReceiveOffer;
         if (_onReceiveAnswer is not null) _signaling.OnReceiveAnswer -= _onReceiveAnswer;
         if (_onReceiveIceCandidate is not null) _signaling.OnReceiveIceCandidate -= _onReceiveIceCandidate;
@@ -78,14 +86,123 @@ public class WebRtcService
     public async Task CloseConnectionAsync() =>
         await EvalJsAsync("closeConnection()");
 
-    private async void OnWebViewNavigating(object? sender, WebNavigatingEventArgs e)
+    private void OnWebViewNavigating(object? sender, WebNavigatingEventArgs e)
     {
         if (!e.Url.StartsWith("visiocall://")) return;
         e.Cancel = true;
+        _ = HandleNativeMessageAsync(e.Url);
+    }
+
+#if WINDOWS
+    private void StartPolling()
+    {
+        _pollCts = new CancellationTokenSource();
+        var token = _pollCts.Token;
+        _ = Task.Run(async () =>
+        {
+            while (!token.IsCancellationRequested)
+            {
+                await Task.Delay(100, token);
+                await PollMessagesAsync();
+            }
+        }, token);
+    }
+
+    private void StopPolling()
+    {
+        _pollCts?.Cancel();
+        _pollCts?.Dispose();
+        _pollCts = null;
+    }
+
+    private async Task PollMessagesAsync()
+    {
+        if (_webView is null) return;
 
         try
         {
-            var uri = new Uri(e.Url);
+            var json = await MainThread.InvokeOnMainThreadAsync(async () =>
+            {
+                try
+                {
+                    return await _webView.EvaluateJavaScriptAsync("flushMessages()");
+                }
+                catch
+                {
+                    return null;
+                }
+            });
+
+            if (string.IsNullOrEmpty(json) || json == "null") return;
+
+            // EvaluateJavaScriptAsync may wrap strings in extra quotes — strip them
+            if (json.StartsWith('"') && json.EndsWith('"'))
+            {
+                json = JsonSerializer.Deserialize<string>(json) ?? json;
+            }
+
+            var messages = JsonSerializer.Deserialize<List<PolledMessage>>(json, JsonOptions);
+            if (messages is null) return;
+
+            foreach (var msg in messages)
+            {
+                await ProcessPolledMessageAsync(msg.Action, msg.Data);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            OnError?.Invoke($"Poll error: {ex.Message}");
+        }
+    }
+
+    private async Task ProcessPolledMessageAsync(string action, JsonElement data)
+    {
+        try
+        {
+            switch (action)
+            {
+                case "offer":
+                    var offer = data.Deserialize<SessionDescription>(JsonOptions)!;
+                    await _signaling.SendOfferAsync(_remoteUserId!, offer);
+                    break;
+                case "answer":
+                    var answer = data.Deserialize<SessionDescription>(JsonOptions)!;
+                    await _signaling.SendAnswerAsync(_remoteUserId!, answer);
+                    break;
+                case "ice-candidate":
+                    var candidate = data.Deserialize<IceCandidate>(JsonOptions)!;
+                    await _signaling.SendIceCandidateAsync(_remoteUserId!, candidate);
+                    break;
+                case "error":
+                    OnError?.Invoke(data.GetString() ?? "Unknown JS error");
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            OnError?.Invoke($"WebRTC bridge error: {ex.Message}");
+        }
+    }
+
+    private class PolledMessage
+    {
+        public string Action { get; set; } = "";
+        public JsonElement Data { get; set; }
+    }
+#endif
+
+    /// <summary>
+    /// Handles a visiocall:// message from JS.
+    /// Called by Navigating event (Android/iOS).
+    /// </summary>
+    public async Task HandleNativeMessageAsync(string url)
+    {
+        if (!url.StartsWith("visiocall://")) return;
+
+        try
+        {
+            var uri = new Uri(url);
             var action = uri.Host;
             var data = Uri.UnescapeDataString(uri.AbsolutePath.TrimStart('/'));
 
