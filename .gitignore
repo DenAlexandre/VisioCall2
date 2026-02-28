@@ -1,0 +1,15 @@
+/Visio/Visio/bin/Debug
+/Visio/Visio/obj/Debug
+/Visio/VisioCall.Maui/obj/Debug/net10.0-android
+/Visio/Visio/obj
+/Visio/VisioCall.Maui/bin/Debug/net10.0-android
+/Visio/VisioCall.Maui/bin/Debug/net10.0-ios/iossimulator-x64
+/Visio/VisioCall.Maui/obj/Debug/net10.0-ios/iossimulator-x64
+/Visio/VisioCall.Maui/obj
+/Visio/VisioCall.Server/bin/Debug/net9.0
+/Visio/VisioCall.Server/obj/Debug/net9.0
+/Visio/VisioCall.Server/obj
+/Visio/VisioCall.Shared/bin/Debug/net9.0/VisioCall.Shared.pdb
+/Visio/VisioCall.Shared/bin/Debug/net9.0
+net10.0
+obj
