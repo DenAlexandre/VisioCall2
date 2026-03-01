@@ -9,7 +9,12 @@ const localVideo = document.getElementById('localVideo');
 const config = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' }
+        { urls: 'stun:stun1.l.google.com:19302' },
+        {
+            urls: 'turn:10.200.15.1:3478',
+            username: 'visiocall',
+            credential: 'VisioCa11Turn2024!'
+        }
     ]
 };
 

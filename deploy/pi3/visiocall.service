@@ -1,0 +1,17 @@
+[Unit]
+Description=VisioCall SignalR Server
+After=network.target wg-quick@wg0.service
+
+[Service]
+Type=exec
+User=visiocall
+Group=visiocall
+WorkingDirectory=/opt/visiocall
+ExecStart=/opt/visiocall/VisioCall.Server
+Environment=ASPNETCORE_ENVIRONMENT=Production
+Environment=DOTNET_gcServer=0
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
